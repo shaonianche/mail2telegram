@@ -2766,6 +2766,17 @@ var DELETE_BATCH_SIZE = 25;
 var MAX_TELEGRAM_FETCHES_PER_TICK = 40;
 var DELETE_CURSOR_KEY = "del:cursor";
 var DELETE_KEY_PREFIX = "del:";
+var DELETE_NEXT_KEY_PREFIX = "del:next:";
+function nextPurgeKey(chatId) {
+  return `${DELETE_NEXT_KEY_PREFIX}${chatId}`;
+}
+function resolvePurgeSlot(sentAtSec, ttlSeconds, existingNextSlot) {
+  const fresh = slotForExpireAt(sentAtSec + ttlSeconds);
+  if (existingNextSlot !== null && existingNextSlot > sentAtSec) {
+    return existingNextSlot;
+  }
+  return fresh;
+}
 function parseGroupMessageTtl(raw) {
   if (raw === void 0 || raw === "") {
     return 0;
@@ -3007,10 +3018,22 @@ var Dao = class {
     await this.db.put(`TelegramID2MailID:${id}`, mailID, { expirationTtl: ttl });
   }
   async enqueueGroupMessageDelete(chatId, messageId, ttlSeconds, sentAtSec) {
-    const slot = slotForExpireAt(sentAtSec + ttlSeconds);
+    const nextKey = nextPurgeKey(chatId);
+    const existingRaw = await this.db.get(nextKey);
+    const existingNext = existingRaw ? Number.parseInt(existingRaw, 10) : Number.NaN;
+    const slot = resolvePurgeSlot(
+      sentAtSec,
+      ttlSeconds,
+      Number.isFinite(existingNext) ? existingNext : null
+    );
+    if (`${slot}` !== existingRaw) {
+      const nextTtl = Math.max(60, slot - sentAtSec + DELETE_KEY_TTL_BUFFER);
+      await this.db.put(nextKey, `${slot}`, { expirationTtl: nextTtl });
+    }
     const key = deleteKey(slot, chatId, messageId);
+    const keyTtl = Math.max(60, slot - sentAtSec + DELETE_KEY_TTL_BUFFER);
     await this.db.put(key, "1", {
-      expirationTtl: ttlSeconds + DELETE_KEY_TTL_BUFFER,
+      expirationTtl: keyTtl,
       metadata: { sent: sentAtSec }
     });
   }

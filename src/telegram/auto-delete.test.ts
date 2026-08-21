@@ -11,8 +11,10 @@ import {
     parseDeleteKey,
     parseGroupMessageTtl,
     previousSlot,
+    resolvePurgeSlot,
     selectSlotsToDrain,
     shouldSkipTelegramDelete,
+    slotForExpireAt,
 } from './auto-delete';
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -140,6 +142,19 @@ export async function testAutoDelete(): Promise<void> {
         deleteMessages: async () => 'retry',
     });
     assertEqual(retryDrain.incompleteSlot, dueEnd, '429 keeps slot');
+
+    const ttl = 3600;
+    const sent10 = 1_700_000_000;
+    const sent20 = sent10 + 10 * 60;
+    const sent30 = sent10 + 20 * 60;
+    const firstSlot = resolvePurgeSlot(sent10, ttl, null);
+    assertEqual(firstSlot, slotForExpireAt(sent10 + ttl), 'first message uses sent+ttl');
+    assertEqual(resolvePurgeSlot(sent20, ttl, firstSlot), firstSlot, '1:20 joins 1:10 purge');
+    assertEqual(resolvePurgeSlot(sent30, ttl, firstSlot), firstSlot, '1:30 joins 1:10 purge');
+    const afterPurge = sent10 + ttl + 120;
+    const nextWindow = resolvePurgeSlot(afterPurge, ttl, firstSlot);
+    assert(nextWindow !== firstSlot, 'messages after purge start a new window');
+    assertEqual(nextWindow, slotForExpireAt(afterPurge + ttl), 'new window uses sent+ttl');
 }
 
 testAutoDelete().then(() => {
