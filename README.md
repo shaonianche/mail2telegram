@@ -37,14 +37,18 @@ This is a Telegram Bot based on Cloudflare Email Routing Worker, which can conve
 1. Clone the repository:
 
     `git clone git@github.com:TBXark/mail2telegram.git`
-2. Copy the configuration template and modify it with your own Telegram configuration: 
+2. Set KV (`DB`), Cron, Workers AI, and secrets in the Cloudflare dashboard. Do not put tokens in `wrangler.jsonc`.
+3. Deploy:
 
-    `cp wrangler.example.jsonc wrangler.jsonc`
-3. Deploy 
+    `pnpm install && pnpm pub`
 
-    `yarn & yarn pub`
+`wrangler.jsonc` is already in the repo (name, entry, compatibility, `keep_vars`). Dashboard vars are kept on deploy. `wrangler.example.jsonc` lists every variable for the dashboard.
 
-#### 1.2 Deploy via Copy and Paste
+#### 1.2 Deploy via Git (auto-deploy)
+
+Connect the existing Worker in the Cloudflare dashboard: **Workers & Pages → mail2telegram → Settings → Builds → Connect**. Authorize the GitHub repo, set the production branch to `master`, leave the deploy command as `npx wrangler deploy`. After that, every push to `master` deploys. After the first auto-deploy, confirm the `DB` KV binding and AI binding are still present.
+
+#### 1.3 Deploy via Copy and Paste
 
 1. If you don't want to deploy using the command line and prefer to copy and paste, you can use the precompiled version > [`index.ts`](./build/index.js)
 2. When deploying via copy and paste, you need to manually set environment variables in the project's configuration page.
