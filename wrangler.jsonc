@@ -7,5 +7,12 @@
     ],
     // Keep Dashboard vars/secrets on each wrangler deploy.
     // KV (DB), Workers AI, Cron, and tokens stay in the Cloudflare dashboard.
-    "keep_vars": true
+    "keep_vars": true,
+    "observability": {
+        "enabled": true,
+        "logs": {
+            "enabled": true,
+            "invocation_logs": true
+        }
+    }
 }
