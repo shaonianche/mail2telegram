@@ -6,8 +6,9 @@ import {
     DELETE_KEY_PREFIX,
     DELETE_KEY_TTL_BUFFER,
     deleteKey,
+    nextPurgeKey,
     parseDeleteKey,
-    slotForExpireAt,
+    resolvePurgeSlot,
 } from '../telegram/auto-delete';
 
 export type AddressListStoreKey = 'BLOCK_LIST' | 'WHITE_LIST';
@@ -96,10 +97,22 @@ export class Dao {
     }
 
     async enqueueGroupMessageDelete(chatId: number, messageId: number, ttlSeconds: number, sentAtSec: number): Promise<void> {
-        const slot = slotForExpireAt(sentAtSec + ttlSeconds);
+        const nextKey = nextPurgeKey(chatId);
+        const existingRaw = await this.db.get(nextKey);
+        const existingNext = existingRaw ? Number.parseInt(existingRaw, 10) : Number.NaN;
+        const slot = resolvePurgeSlot(
+            sentAtSec,
+            ttlSeconds,
+            Number.isFinite(existingNext) ? existingNext : null,
+        );
+        if (`${slot}` !== existingRaw) {
+            const nextTtl = Math.max(60, slot - sentAtSec + DELETE_KEY_TTL_BUFFER);
+            await this.db.put(nextKey, `${slot}`, { expirationTtl: nextTtl });
+        }
         const key = deleteKey(slot, chatId, messageId);
+        const keyTtl = Math.max(60, slot - sentAtSec + DELETE_KEY_TTL_BUFFER);
         await this.db.put(key, '1', {
-            expirationTtl: ttlSeconds + DELETE_KEY_TTL_BUFFER,
+            expirationTtl: keyTtl,
             metadata: { sent: sentAtSec },
         });
     }

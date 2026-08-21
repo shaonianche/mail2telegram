@@ -124,7 +124,7 @@ When the email forwarding notification is sent to Telegram, only the title, send
 
 
 ### Auto-delete group notifications
-Set `GROUP_MESSAGE_TTL` (seconds) to delete the bot's own mail notification messages in groups/supergroups after that delay. Telegram only allows bots to delete messages less than 48 hours old, so the value is clamped to 46 hours. This does not delete private-chat messages, command replies (`/id`, `/start`, …), or the web preview links (those still follow `MAIL_TTL`).
+Set `GROUP_MESSAGE_TTL` (seconds) to auto-delete the bot's own mail notifications in groups/supergroups. The first notification in a chat starts a purge window; later notifications in that chat join the same window, so they are deleted together when the window ends (for example 1:10 / 1:20 / 1:30 all go away about 1 hour after 1:10 if TTL is 3600). Telegram only allows bots to delete messages less than 48 hours old, so the value is clamped to 46 hours. This does not delete private-chat messages, command replies (`/id`, `/start`, …), or the web preview links (those still follow `MAIL_TTL`).
 
 Cron is required. With Wrangler, `wrangler.example.jsonc` already has `"triggers": { "crons": ["*/5 * * * *"] }`. If you deploy by pasting `build/index.js` in the dashboard, rebuild that file and add the same Cron Trigger under Worker → Settings → Triggers. The `scheduled()` handler and the Cron Trigger must both be present.
 

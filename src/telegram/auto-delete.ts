@@ -8,6 +8,19 @@ export const DELETE_BATCH_SIZE = 25;
 export const MAX_TELEGRAM_FETCHES_PER_TICK = 40;
 export const DELETE_CURSOR_KEY = 'del:cursor';
 export const DELETE_KEY_PREFIX = 'del:';
+export const DELETE_NEXT_KEY_PREFIX = 'del:next:';
+
+export function nextPurgeKey(chatId: number): string {
+    return `${DELETE_NEXT_KEY_PREFIX}${chatId}`;
+}
+
+export function resolvePurgeSlot(sentAtSec: number, ttlSeconds: number, existingNextSlot: number | null): number {
+    const fresh = slotForExpireAt(sentAtSec + ttlSeconds);
+    if (existingNextSlot !== null && existingNextSlot > sentAtSec) {
+        return existingNextSlot;
+    }
+    return fresh;
+}
 
 export interface DeleteTask {
     key: string;
