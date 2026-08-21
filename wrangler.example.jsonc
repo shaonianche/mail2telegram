@@ -14,6 +14,11 @@
     "ai": {
         "binding": "AI"
     },
+    "triggers": {
+        "crons": [
+            "*/5 * * * *"
+        ]
+    },
     "vars": {
         "DOMAIN": "mail2telegram.YOUR_NAME.workers.dev",
         "TELEGRAM_ID": "YOUR_TELEGRAM_ID",
@@ -27,6 +32,7 @@
         // "WHITE_LIST": "Suggested settings in the Telegram mini apps",
         // "BLOCK_LIST": "Suggested settings in the Telegram mini apps",
         // "MAIL_TTL": "3600",
+        // "GROUP_MESSAGE_TTL": "3600", // seconds, group/supergroup bot messages only; 300-165600, unset/0 disables enqueue
         "GUARDIAN_MODE": "false",
         // "MAX_EMAIL_SIZE": "524288",
         "MAX_EMAIL_SIZE_POLICY": "truncate",

@@ -2755,6 +2755,184 @@ var u2 = o("image/jpeg");
 var h = o("image/png");
 var g2 = o("image/webp");
 
+// src/telegram/auto-delete.ts
+var DELETE_SLOT_SECONDS = 300;
+var GROUP_MESSAGE_TTL_MIN = 300;
+var GROUP_MESSAGE_TTL_MAX = 165600;
+var DELETE_KEY_TTL_BUFFER = 7200;
+var TELEGRAM_DELETE_MAX_AGE = 48 * 3600;
+var MAX_SLOTS_PER_TICK = 6;
+var DELETE_BATCH_SIZE = 25;
+var MAX_TELEGRAM_FETCHES_PER_TICK = 40;
+var DELETE_CURSOR_KEY = "del:cursor";
+var DELETE_KEY_PREFIX = "del:";
+function parseGroupMessageTtl(raw) {
+  if (raw === void 0 || raw === "") {
+    return 0;
+  }
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isFinite(value) || value <= 0) {
+    if (raw.trim() !== "0") {
+      console.warn(`[auto-delete] invalid GROUP_MESSAGE_TTL=${raw}, disable enqueue`);
+    }
+    return 0;
+  }
+  return Math.min(GROUP_MESSAGE_TTL_MAX, Math.max(GROUP_MESSAGE_TTL_MIN, value));
+}
+function isGroupChatType(type) {
+  return type === "group" || type === "supergroup";
+}
+function alignSlot(unixSeconds) {
+  return Math.floor(unixSeconds / DELETE_SLOT_SECONDS) * DELETE_SLOT_SECONDS;
+}
+function previousSlot(scheduledTimeMs) {
+  return alignSlot(Math.floor(scheduledTimeMs / 1e3)) - DELETE_SLOT_SECONDS;
+}
+function slotForExpireAt(expireAtSec) {
+  return alignSlot(expireAtSec);
+}
+function deleteKey(slot, chatId, messageId) {
+  return `${DELETE_KEY_PREFIX}${slot}:${chatId}:${messageId}`;
+}
+function parseDeleteKey(name2) {
+  const match4 = /^del:(\d+):(-?\d+):(\d+)$/.exec(name2);
+  if (!match4) {
+    return null;
+  }
+  return {
+    slot: Number(match4[1]),
+    chatId: Number(match4[2]),
+    messageId: Number(match4[3])
+  };
+}
+function shouldSkipTelegramDelete(sentAt, nowSec) {
+  return nowSec - sentAt >= TELEGRAM_DELETE_MAX_AGE;
+}
+function classifyTelegramDeleteError(status, errorCode) {
+  const code = errorCode || status;
+  if (code === 429 || status === 429) {
+    return "retry";
+  }
+  if (code === 403 || status === 403) {
+    return "drop-chat";
+  }
+  if (code === 400 || status === 400) {
+    return "drop";
+  }
+  if (status >= 500 || code >= 500) {
+    return "retry";
+  }
+  return "retry";
+}
+function groupTasksByChat(tasks) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const task of tasks) {
+    const list = groups.get(task.chatId) || [];
+    list.push(task);
+    groups.set(task.chatId, list);
+  }
+  return groups;
+}
+function batches(items, size) {
+  const result = [];
+  for (let i2 = 0; i2 < items.length; i2 += size) {
+    result.push(items.slice(i2, i2 + size));
+  }
+  return result;
+}
+function selectSlotsToDrain(scheduledTimeMs, storedCursor) {
+  const dueEnd = previousSlot(scheduledTimeMs);
+  const oldest = alignSlot(dueEnd - TELEGRAM_DELETE_MAX_AGE);
+  if (storedCursor === null || storedCursor > dueEnd) {
+    const overlap = [dueEnd - DELETE_SLOT_SECONDS, dueEnd].filter((slot) => slot >= oldest);
+    return overlap;
+  }
+  const start = Math.max(storedCursor, oldest);
+  const slots = [];
+  for (let slot = start; slot <= dueEnd && slots.length < MAX_SLOTS_PER_TICK; slot += DELETE_SLOT_SECONDS) {
+    slots.push(slot);
+  }
+  return slots;
+}
+function nextCursorPersist(params) {
+  const { storedCursor, dueEnd, incompleteSlot, lastCompletedSlot } = params;
+  if (incompleteSlot !== null) {
+    if (storedCursor === incompleteSlot) {
+      return { cursor: incompleteSlot, persist: "none" };
+    }
+    return { cursor: incompleteSlot, persist: "put" };
+  }
+  if (lastCompletedSlot !== null && lastCompletedSlot < dueEnd) {
+    const cursor = lastCompletedSlot + DELETE_SLOT_SECONDS;
+    if (storedCursor === cursor) {
+      return { cursor, persist: "none" };
+    }
+    return { cursor, persist: "put" };
+  }
+  if (storedCursor !== null) {
+    return { cursor: null, persist: "delete" };
+  }
+  return { cursor: null, persist: "none" };
+}
+async function drainDueSlots(slots, deps) {
+  const maxFetches = deps.maxFetches ?? MAX_TELEGRAM_FETCHES_PER_TICK;
+  const batchSize = deps.batchSize ?? DELETE_BATCH_SIZE;
+  let fetches = 0;
+  let lastCompletedSlot = null;
+  for (const slot of slots) {
+    const listed = await deps.listSlot(slot);
+    const remaining = listed.tasks.filter((task) => {
+      if (shouldSkipTelegramDelete(task.sentAt, deps.nowSec)) {
+        return false;
+      }
+      return true;
+    });
+    const expiredKeys = listed.tasks.filter((task) => shouldSkipTelegramDelete(task.sentAt, deps.nowSec)).map((task) => task.key);
+    if (expiredKeys.length > 0) {
+      await deps.deleteKeys(expiredKeys);
+    }
+    const byChat = groupTasksByChat(remaining);
+    let slotIncomplete = !listed.complete;
+    let stopSlot = false;
+    for (const [chatId, chatTasks] of byChat) {
+      if (stopSlot) {
+        break;
+      }
+      let skipChat = false;
+      for (const batch of batches(chatTasks, batchSize)) {
+        if (skipChat) {
+          break;
+        }
+        if (fetches >= maxFetches) {
+          slotIncomplete = true;
+          stopSlot = true;
+          break;
+        }
+        fetches += 1;
+        const action = await deps.deleteMessages(chatId, batch.map((task) => task.messageId));
+        if (action === "ok" || action === "drop") {
+          await deps.deleteKeys(batch.map((task) => task.key));
+          continue;
+        }
+        if (action === "drop-chat") {
+          const rest = remaining.filter((task) => task.chatId === chatId).map((task) => task.key);
+          await deps.deleteKeys(rest);
+          skipChat = true;
+          break;
+        }
+        slotIncomplete = true;
+        stopSlot = true;
+        break;
+      }
+    }
+    if (slotIncomplete) {
+      return { incompleteSlot: slot, lastCompletedSlot, fetches };
+    }
+    lastCompletedSlot = slot;
+  }
+  return { incompleteSlot: null, lastCompletedSlot, fetches };
+}
+
 // src/db/index.ts
 var Dao = class {
   db;
@@ -2827,6 +3005,60 @@ var Dao = class {
   }
   async saveTelegramIDToMailID(id, mailID, ttl) {
     await this.db.put(`TelegramID2MailID:${id}`, mailID, { expirationTtl: ttl });
+  }
+  async enqueueGroupMessageDelete(chatId, messageId, ttlSeconds, sentAtSec) {
+    const slot = slotForExpireAt(sentAtSec + ttlSeconds);
+    const key = deleteKey(slot, chatId, messageId);
+    await this.db.put(key, "1", {
+      expirationTtl: ttlSeconds + DELETE_KEY_TTL_BUFFER,
+      metadata: { sent: sentAtSec }
+    });
+  }
+  async listDeleteSlot(slot, maxKeys = 200) {
+    const prefix = `${DELETE_KEY_PREFIX}${slot}:`;
+    const tasks = [];
+    let cursor;
+    do {
+      const page = await this.db.list({ prefix, cursor, limit: 100 });
+      for (const item of page.keys) {
+        const parsed = parseDeleteKey(item.name);
+        if (!parsed) {
+          continue;
+        }
+        const metadata = item.metadata;
+        tasks.push({
+          key: item.name,
+          slot: parsed.slot,
+          chatId: parsed.chatId,
+          messageId: parsed.messageId,
+          sentAt: typeof metadata?.sent === "number" ? metadata.sent : parsed.slot
+        });
+        if (tasks.length >= maxKeys) {
+          return { tasks, complete: false };
+        }
+      }
+      cursor = page.list_complete ? void 0 : page.cursor;
+    } while (cursor);
+    return { tasks, complete: true };
+  }
+  async deleteKeys(keys) {
+    for (const key of keys) {
+      await this.db.delete(key);
+    }
+  }
+  async loadDeleteCursor() {
+    const raw = await this.db.get(DELETE_CURSOR_KEY);
+    if (!raw) {
+      return null;
+    }
+    const value = Number.parseInt(raw, 10);
+    return Number.isFinite(value) ? value : null;
+  }
+  async saveDeleteCursor(slot) {
+    await this.db.put(DELETE_CURSOR_KEY, `${slot}`);
+  }
+  async clearDeleteCursor() {
+    await this.db.delete(DELETE_CURSOR_KEY);
   }
 };
 function loadArrayFromRaw(raw) {
@@ -13728,20 +13960,65 @@ async function fetchHandler(request, env) {
 }
 
 // src/handler/mail/index.ts
+async function enqueueGroupMessageDelete(dao, env, message) {
+  const ttl = parseGroupMessageTtl(env.GROUP_MESSAGE_TTL);
+  if (ttl <= 0) {
+    return;
+  }
+  if (!isGroupChatType(message.chat?.type)) {
+    return;
+  }
+  const sentAt = message.date || Math.floor(Date.now() / 1e3);
+  await dao.enqueueGroupMessageDelete(message.chat.id, message.message_id, ttl, sentAt);
+  console.log(`[mail] auto-delete.enqueue ${JSON.stringify({
+    chatId: message.chat.id,
+    messageId: message.message_id,
+    ttl,
+    sentAt
+  })}`);
+}
 async function sendMailToTelegram(mail, env) {
   const {
     TELEGRAM_TOKEN,
-    TELEGRAM_ID
+    TELEGRAM_ID,
+    DB
   } = env;
   const req = await renderEmailListMode(mail, env);
   const api = createTelegramBotAPI(TELEGRAM_TOKEN);
+  const dao = new Dao(DB);
   const messageID = [];
-  for (const id of TELEGRAM_ID.split(",")) {
+  let lastSendError = null;
+  for (const rawId of TELEGRAM_ID.split(",")) {
+    const chatId = rawId.trim();
+    if (!chatId) {
+      continue;
+    }
     const msg = await api.sendMessageWithReturns({
-      chat_id: id,
+      chat_id: chatId,
       ...req
     });
+    if (!msg?.ok || msg.result?.message_id == null) {
+      lastSendError = msg?.description || "sendMessage failed";
+      console.error(`[mail] send_message.failed ${JSON.stringify({
+        chatId,
+        ok: msg?.ok,
+        description: lastSendError
+      })}`);
+      continue;
+    }
     messageID.push(msg.result.message_id);
+    try {
+      await enqueueGroupMessageDelete(dao, env, msg.result);
+    } catch (error2) {
+      console.error(`[mail] auto-delete.enqueue_failed ${JSON.stringify({
+        chatId: msg.result.chat?.id,
+        messageId: msg.result.message_id,
+        message: error2.message
+      })}`);
+    }
+  }
+  if (messageID.length === 0) {
+    throw new Error(lastSendError || "Failed to send mail to telegram");
   }
   return messageID;
 }
@@ -13809,6 +14086,78 @@ async function emailHandler(message, env) {
   }
 }
 
+// src/handler/scheduled/index.ts
+function logScheduled(event, data) {
+  console.log(`[scheduled] ${event}${data ? ` ${JSON.stringify(data)}` : ""}`);
+}
+async function telegramDeleteAction(api, chatId, messageIds) {
+  try {
+    const result = await api.requestJSON("deleteMessages", {
+      chat_id: chatId,
+      message_ids: messageIds
+    });
+    if (result?.ok) {
+      return "ok";
+    }
+    const action = classifyTelegramDeleteError(0, result?.error_code);
+    logScheduled("delete_messages.result", {
+      chatId,
+      count: messageIds.length,
+      ok: result?.ok,
+      errorCode: result?.error_code,
+      description: result?.description,
+      action
+    });
+    return action;
+  } catch (error2) {
+    logScheduled("delete_messages.error", {
+      chatId,
+      count: messageIds.length,
+      message: error2.message
+    });
+    return "retry";
+  }
+}
+async function scheduledHandler(controller, env) {
+  const dao = new Dao(env.DB);
+  const api = createTelegramBotAPI(env.TELEGRAM_TOKEN);
+  const nowSec = Math.floor(controller.scheduledTime / 1e3);
+  const dueEnd = previousSlot(controller.scheduledTime);
+  const storedCursor = await dao.loadDeleteCursor();
+  const slots = selectSlotsToDrain(controller.scheduledTime, storedCursor);
+  logScheduled("drain.start", {
+    cron: controller.cron,
+    scheduledTime: controller.scheduledTime,
+    storedCursor,
+    dueEnd,
+    slots
+  });
+  const result = await drainDueSlots(slots, {
+    nowSec,
+    listSlot: (slot) => dao.listDeleteSlot(slot),
+    deleteKeys: (keys) => dao.deleteKeys(keys),
+    deleteMessages: (chatId, messageIds) => telegramDeleteAction(api, chatId, messageIds)
+  });
+  const persist = nextCursorPersist({
+    storedCursor,
+    dueEnd,
+    incompleteSlot: result.incompleteSlot,
+    lastCompletedSlot: result.lastCompletedSlot
+  });
+  if (persist.persist === "put" && persist.cursor !== null) {
+    await dao.saveDeleteCursor(persist.cursor);
+  } else if (persist.persist === "delete") {
+    await dao.clearDeleteCursor();
+  }
+  logScheduled("drain.done", {
+    fetches: result.fetches,
+    incompleteSlot: result.incompleteSlot,
+    lastCompletedSlot: result.lastCompletedSlot,
+    persist: persist.persist,
+    cursor: persist.cursor
+  });
+}
+
 // src/polyfill/index.ts
 if (typeof Buffer === "undefined") {
   globalThis.Buffer = class Buffer2 extends ArrayBuffer {
@@ -13851,7 +14200,8 @@ if (typeof Buffer === "undefined") {
 // src/index.ts
 var index_default = {
   fetch: fetchHandler,
-  email: emailHandler
+  email: emailHandler,
+  scheduled: scheduledHandler
 };
 export {
   index_default as default

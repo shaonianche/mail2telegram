@@ -1,23 +1,80 @@
 import type { ForwardableEmailMessage } from '@cloudflare/workers-types';
+import type * as Telegram from 'telegram-bot-api-types';
 import type { BlockPolicy, EmailCache, Environment } from '../../types';
 import { Dao } from '../../db';
 import { isMessageBlock, parseEmail, renderEmailListMode } from '../../mail';
-import { createTelegramBotAPI } from '../../telegram';
+import { createTelegramBotAPI, isGroupChatType, parseGroupMessageTtl } from '../../telegram';
+
+interface TelegramApiResponse<T> {
+    ok: boolean;
+    result?: T;
+    description?: string;
+}
+
+async function enqueueGroupMessageDelete(
+    dao: Dao,
+    env: Environment,
+    message: Telegram.Message,
+): Promise<void> {
+    const ttl = parseGroupMessageTtl(env.GROUP_MESSAGE_TTL);
+    if (ttl <= 0) {
+        return;
+    }
+    if (!isGroupChatType(message.chat?.type)) {
+        return;
+    }
+    const sentAt = message.date || Math.floor(Date.now() / 1000);
+    await dao.enqueueGroupMessageDelete(message.chat.id, message.message_id, ttl, sentAt);
+    console.log(`[mail] auto-delete.enqueue ${JSON.stringify({
+        chatId: message.chat.id,
+        messageId: message.message_id,
+        ttl,
+        sentAt,
+    })}`);
+}
 
 export async function sendMailToTelegram(mail: EmailCache, env: Environment): Promise<number[]> {
     const {
         TELEGRAM_TOKEN,
         TELEGRAM_ID,
+        DB,
     } = env;
     const req = await renderEmailListMode(mail, env);
     const api = createTelegramBotAPI(TELEGRAM_TOKEN);
+    const dao = new Dao(DB);
     const messageID: number[] = [];
-    for (const id of TELEGRAM_ID.split(',')) {
+    let lastSendError: string | null = null;
+    for (const rawId of TELEGRAM_ID.split(',')) {
+        const chatId = rawId.trim();
+        if (!chatId) {
+            continue;
+        }
         const msg = await api.sendMessageWithReturns({
-            chat_id: id,
+            chat_id: chatId,
             ...req,
-        });
+        }) as TelegramApiResponse<Telegram.Message>;
+        if (!msg?.ok || msg.result?.message_id == null) {
+            lastSendError = msg?.description || 'sendMessage failed';
+            console.error(`[mail] send_message.failed ${JSON.stringify({
+                chatId,
+                ok: msg?.ok,
+                description: lastSendError,
+            })}`);
+            continue;
+        }
         messageID.push(msg.result.message_id);
+        try {
+            await enqueueGroupMessageDelete(dao, env, msg.result);
+        } catch (error) {
+            console.error(`[mail] auto-delete.enqueue_failed ${JSON.stringify({
+                chatId: msg.result.chat?.id,
+                messageId: msg.result.message_id,
+                message: (error as Error).message,
+            })}`);
+        }
+    }
+    if (messageID.length === 0) {
+        throw new Error(lastSendError || 'Failed to send mail to telegram');
     }
     return messageID;
 }

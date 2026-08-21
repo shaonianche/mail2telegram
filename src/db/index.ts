@@ -1,5 +1,14 @@
 import type { KVNamespace } from '@cloudflare/workers-types';
+import type { DeleteTask } from '../telegram/auto-delete';
 import type { EmailCache, EmailHandleStatus } from '../types';
+import {
+    DELETE_CURSOR_KEY,
+    DELETE_KEY_PREFIX,
+    DELETE_KEY_TTL_BUFFER,
+    deleteKey,
+    parseDeleteKey,
+    slotForExpireAt,
+} from '../telegram/auto-delete';
 
 export type AddressListStoreKey = 'BLOCK_LIST' | 'WHITE_LIST';
 
@@ -84,6 +93,66 @@ export class Dao {
 
     async saveTelegramIDToMailID(id: string, mailID: string, ttl?: number): Promise<void> {
         await this.db.put(`TelegramID2MailID:${id}`, mailID, { expirationTtl: ttl });
+    }
+
+    async enqueueGroupMessageDelete(chatId: number, messageId: number, ttlSeconds: number, sentAtSec: number): Promise<void> {
+        const slot = slotForExpireAt(sentAtSec + ttlSeconds);
+        const key = deleteKey(slot, chatId, messageId);
+        await this.db.put(key, '1', {
+            expirationTtl: ttlSeconds + DELETE_KEY_TTL_BUFFER,
+            metadata: { sent: sentAtSec },
+        });
+    }
+
+    async listDeleteSlot(slot: number, maxKeys: number = 200): Promise<{ tasks: DeleteTask[]; complete: boolean }> {
+        const prefix = `${DELETE_KEY_PREFIX}${slot}:`;
+        const tasks: DeleteTask[] = [];
+        let cursor: string | undefined;
+        do {
+            const page = await this.db.list({ prefix, cursor, limit: 100 });
+            for (const item of page.keys) {
+                const parsed = parseDeleteKey(item.name);
+                if (!parsed) {
+                    continue;
+                }
+                const metadata = item.metadata as { sent?: number } | undefined;
+                tasks.push({
+                    key: item.name,
+                    slot: parsed.slot,
+                    chatId: parsed.chatId,
+                    messageId: parsed.messageId,
+                    sentAt: typeof metadata?.sent === 'number' ? metadata.sent : parsed.slot,
+                });
+                if (tasks.length >= maxKeys) {
+                    return { tasks, complete: false };
+                }
+            }
+            cursor = page.list_complete ? undefined : page.cursor;
+        } while (cursor);
+        return { tasks, complete: true };
+    }
+
+    async deleteKeys(keys: string[]): Promise<void> {
+        for (const key of keys) {
+            await this.db.delete(key);
+        }
+    }
+
+    async loadDeleteCursor(): Promise<number | null> {
+        const raw = await this.db.get(DELETE_CURSOR_KEY);
+        if (!raw) {
+            return null;
+        }
+        const value = Number.parseInt(raw, 10);
+        return Number.isFinite(value) ? value : null;
+    }
+
+    async saveDeleteCursor(slot: number): Promise<void> {
+        await this.db.put(DELETE_CURSOR_KEY, `${slot}`);
+    }
+
+    async clearDeleteCursor(): Promise<void> {
+        await this.db.delete(DELETE_CURSOR_KEY);
     }
 }
 
