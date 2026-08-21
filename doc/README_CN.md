@@ -70,7 +70,8 @@ mail2telegram
 | FORWARD_LIST           | 备份邮件，可以转发到自己的邮箱备份, 留空则不转发，可以填入多个使用`,`分隔                                                                                                                               |
 | ~~WHITE_LIST~~         | **即将废弃,改用内置小程序进行编辑**，发件人白名单，一个正则表达式或者邮箱地址数组转成字符串，例：`[\".*@10086\\\\.cn\"]`                                                                                            |
 | ~~BLOCK_LIST~~         | **即将废弃,改用内置小程序进行编辑**，发件人黑名单，一个正则表达式或者邮箱地址数组转成字符串                                                                                                                      |
-| MAIL_TTL               | 邮件缓存保存时间，单位秒, 默认为一天, 过期之后邮件将无法预览，请注意备份                                                                                                                                |
+| MAIL_TTL               | 邮件缓存保存时间，单位秒, 默认为一天, 过期之后邮件将无法预览，请注意备份。**不会**删除 Telegram 消息                                                                                                      |
+| GROUP_MESSAGE_TTL      | 可选。N 秒后自动删除 bot 自己发到**群/超级群**的邮件通知（300–165600，即 5 分钟–46 小时）。未设置或 `0` 表示不再入队；已入队的仍会继续删完。私聊不删。需要 Cron Trigger（`*/5 * * * *`）。             |
 | WORKERS_AI_MODEL       | Workers AI 模型名称。绑定 `AI` 服务并设置此值后，邮件总结将优先使用 Workers AI。                                                                                                                     |
 | OPENAI_API_KEY         | OpenAI API Key，在未配置 Workers AI 时用于生成总结；若 `WORKERS_AI_MODEL` 与此变量都未配置则不会出现 `Summary` 按钮。                                                                                         |
 | OPENAI_COMPLETIONS_API | 可自定义API，默认值为 `https://api.openai.com/v1/chat/completions`                                                                                                             |
@@ -115,6 +116,11 @@ To: [recipient]
 2. `Summary`模式: 绑定 Workers AI 并设置 `WORKERS_AI_MODEL` 后将由 Workers AI 生成总结；否则在配置 `OPENAI_API_KEY` 时使用 OpenAI。两者都未配置时不会显示 `Summary` 按钮。
 3. `TEXT`模式: 使用网页查看纯文本的邮件，可以阅读长度超过4096的邮件。
 4. `HTML`模式: 可以看到富文本的邮件，但是他其中可能包含某些脚本或者其他追踪链接。建议只有当你有需要的时候或者确认来源没有问题的时候才使用富文本模式。
+
+### 群组消息自动删除
+设置 `GROUP_MESSAGE_TTL`（秒）后，bot 发到群/超级群的邮件通知会在到期后删除。Telegram 只能删除 48 小时内的消息，因此上限钳在 46 小时。不会删除私聊消息、命令回复（`/id`、`/start` 等），也不会关掉网页预览链接（仍由 `MAIL_TTL` 控制）。
+
+必须配置 Cron。使用 Wrangler 时，`wrangler.example.jsonc` 已包含 `"triggers": { "crons": ["*/5 * * * *"] }`。若用复制粘贴 `build/index.js` 部署，需要重新构建该文件，并在 Dashboard → Worker → 设置 → 触发器 中添加同样的 Cron。`scheduled()` 与 Cron Trigger 必须同时存在。
 
 ### 安全与邮件缓存
 1. `MAIL_TTL`: 为了安全起见，当超过`MAIL_TTL`邮件缓存保存时间，按钮跳转的链接无法打开。你可以自行修改环境变量调整过期时间。

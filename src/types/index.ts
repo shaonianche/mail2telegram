@@ -28,6 +28,7 @@ export interface Environment {
     DISABLE_LOAD_REGEX_FROM_DB: string;
     BLOCK_POLICY: string;
     MAIL_TTL: string;
+    GROUP_MESSAGE_TTL?: string;
     DOMAIN: string;
     MAX_EMAIL_SIZE?: string;
     MAX_EMAIL_SIZE_POLICY?: MaxEmailSizePolicy;
