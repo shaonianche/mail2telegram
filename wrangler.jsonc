@@ -1,0 +1,11 @@
+{
+    "name": "mail2telegram",
+    "main": "src/index.ts",
+    "compatibility_date": "2025-09-15",
+    "compatibility_flags": [
+        "nodejs_compat_v2"
+    ],
+    // Keep Dashboard vars/secrets on each wrangler deploy.
+    // KV (DB), Workers AI, Cron, and tokens stay in the Cloudflare dashboard.
+    "keep_vars": true
+}

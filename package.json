@@ -31,6 +31,12 @@
         "itty-router": "^5.0.24",
         "postal-mime": "^2.7.5"
     },
+    "pnpm": {
+        "onlyBuiltDependencies": [
+            "esbuild",
+            "workerd"
+        ]
+    },
     "devDependencies": {
         "@antfu/eslint-config": "^9.1.0",
         "@cloudflare/workers-types": "^4.20260702.1",

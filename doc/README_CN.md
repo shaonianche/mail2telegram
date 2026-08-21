@@ -36,14 +36,18 @@ mail2telegram
 1. 克隆项目
 
     `git clone git@github.com:TBXark/mail2telegram.git`
-2. 复制配置模板，修改成自己的telegram配置 
+2. 在 Cloudflare Dashboard 配置 KV（`DB`）、Cron、Workers AI 和密钥，不要把 Token 写进 `wrangler.jsonc`。
+3. 部署
 
-    `cp wrangler.example.jsonc wrangler.jsonc` 
-3. 部署 
+    `pnpm install && pnpm pub`
 
-    `yarn & yarn pub`
+仓库已包含最简 `wrangler.jsonc`（name、入口、compatibility、`keep_vars`）。Dashboard 上的变量在每次 deploy 时会保留。全部变量说明见 `wrangler.example.jsonc`。
 
-#### 1.2 使用复制粘贴部署
+#### 1.2 使用 Git 自动部署
+
+在 Cloudflare Dashboard 连接现有 Worker：**Workers 和 Pages → mail2telegram → 设置 → Builds → Connect**。授权 GitHub 仓库，生产分支选 `master`，Deploy command 保持 `npx wrangler deploy`。之后每次 push `master` 都会自动发布。第一次自动部署后请确认 `DB` KV 绑定和 AI 绑定还在。
+
+#### 1.3 使用复制粘贴部署
 
 1. 如果你不想使用命令行部署只想复制粘贴可以使用我编译好的版本 > [`index.ts`](../build/index.js)
 2. 使用复制粘贴部署需要手动在项目配置页面设置环境变量
