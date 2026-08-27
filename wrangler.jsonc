@@ -5,9 +5,26 @@
     "compatibility_flags": [
         "nodejs_compat_v2"
     ],
-    // Keep Dashboard vars/secrets on each wrangler deploy.
-    // KV (DB), Workers AI, Cron, and tokens stay in the Cloudflare dashboard.
+    // keep_vars preserves Dashboard vars/secrets ONLY.
+    // Bindings and cron triggers below are the deploy source of truth:
+    // anything not declared here is REMOVED on each `wrangler deploy`.
     "keep_vars": true,
+    // Cron for the group-message auto-delete purge (src/handler/scheduled).
+    "triggers": {
+        "crons": [
+            "*/5 * * * *"
+        ]
+    },
+    // KV binding used for mail cache / white & block lists / delete queue.
+    // Paste your namespace id once (dashboard → Workers & Pages → KV →
+    // the namespace → id). Without this block a deploy unbinds `DB`,
+    // which breaks caching, lists, and the Telegram-ID mapping.
+    // "kv_namespaces": [
+    //     {
+    //         "binding": "DB",
+    //         "id": "<YOUR_KV_NAMESPACE_ID>"
+    //     }
+    // ],
     "observability": {
         "enabled": true,
         "logs": {

@@ -14072,7 +14072,7 @@ async function emailHandler(message, env) {
     for (const forward of forwardList) {
       try {
         const add = forward.trim();
-        if (status.forward.includes(add)) {
+        if (!add || status.forward.includes(add)) {
           continue;
         }
         await message.forward(add);
@@ -14094,10 +14094,17 @@ async function emailHandler(message, env) {
       const maxSize = Number.parseInt(MAX_EMAIL_SIZE || "", 10) || 512 * 1024;
       const maxSizePolicy = MAX_EMAIL_SIZE_POLICY || "truncate";
       const mail = await parseEmail(message, maxSize, maxSizePolicy);
-      await dao.saveMailCache(mail.id, mail, ttl);
       const msgIDs = await sendMailToTelegram(mail, env);
-      for (const msgID of msgIDs) {
-        await dao.saveTelegramIDToMailID(`${msgID}`, mail.id, ttl);
+      try {
+        await dao.saveMailCache(mail.id, mail, ttl);
+        for (const msgID of msgIDs) {
+          await dao.saveTelegramIDToMailID(`${msgID}`, mail.id, ttl);
+        }
+      } catch (e) {
+        console.error(`[mail] save_mail_cache.failed ${JSON.stringify({
+          id: mail.id,
+          message: e.message
+        })}`);
       }
     }
     if (isGuardian) {

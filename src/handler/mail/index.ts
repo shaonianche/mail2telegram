@@ -111,7 +111,7 @@ export async function emailHandler(message: ForwardableEmailMessage, env: Enviro
         for (const forward of forwardList) {
             try {
                 const add = forward.trim();
-                if (status.forward.includes(add)) {
+                if (!add || status.forward.includes(add)) {
                     continue;
                 }
                 await message.forward(add);
@@ -135,10 +135,20 @@ export async function emailHandler(message: ForwardableEmailMessage, env: Enviro
             const maxSize = Number.parseInt(MAX_EMAIL_SIZE || '', 10) || 512 * 1024;
             const maxSizePolicy = MAX_EMAIL_SIZE_POLICY || 'truncate';
             const mail = await parseEmail(message, maxSize, maxSizePolicy);
-            await dao.saveMailCache(mail.id, mail, ttl);
             const msgIDs = await sendMailToTelegram(mail, env);
-            for (const msgID of msgIDs) {
-                await dao.saveTelegramIDToMailID(`${msgID}`, mail.id, ttl);
+            // KV writes are best-effort: a cache failure (e.g. missing DB
+            // binding after a config-only deploy) must not swallow the
+            // Telegram send that already succeeded above.
+            try {
+                await dao.saveMailCache(mail.id, mail, ttl);
+                for (const msgID of msgIDs) {
+                    await dao.saveTelegramIDToMailID(`${msgID}`, mail.id, ttl);
+                }
+            } catch (e) {
+                console.error(`[mail] save_mail_cache.failed ${JSON.stringify({
+                    id: mail.id,
+                    message: (e as Error).message,
+                })}`);
             }
         }
         if (isGuardian) {
