@@ -6,8 +6,21 @@
         "nodejs_compat_v2"
     ],
     // Keep Dashboard vars/secrets on each wrangler deploy.
-    // KV (DB), Workers AI, Cron, and tokens stay in the Cloudflare dashboard.
+    // NOTE: keep_vars only preserves plain-text vars and secrets.
+    // KV bindings, AI bindings and cron triggers MUST be declared here,
+    // otherwise `wrangler deploy` removes them from the worker.
     "keep_vars": true,
+    "kv_namespaces": [
+        {
+            "binding": "DB",
+            "id": "a67a7ba2e1474c5abfc9d566d7875f44"
+        }
+    ],
+    "triggers": {
+        "crons": [
+            "*/5 * * * *"
+        ]
+    },
     "observability": {
         "enabled": true,
         "logs": {
