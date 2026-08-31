@@ -11,6 +11,7 @@ import {
     parseDeleteKey,
     parseGroupMessageTtl,
     previousSlot,
+    resolveDeleteActiveSlot,
     resolvePurgeSlot,
     selectSlotsToDrain,
     shouldSkipTelegramDelete,
@@ -69,6 +70,12 @@ export async function testAutoDelete(): Promise<void> {
     assertEqual(parsed.chatId, -100123, 'negative chat id');
     assertEqual(parsed.messageId, 42, 'message id');
     assertEqual(parseDeleteKey('del:cursor'), null, 'cursor is not a task key');
+    assertEqual(parseDeleteKey('del:active'), null, 'active sentinel is not a task key');
+
+    assertEqual(resolveDeleteActiveSlot(null, dueEnd), dueEnd, 'first enqueue sets sentinel');
+    assertEqual(resolveDeleteActiveSlot('abc', 500), 500, 'corrupt sentinel is overwritten');
+    assertEqual(resolveDeleteActiveSlot(`${dueEnd}`, dueEnd - 1), null, 'older slot keeps sentinel');
+    assertEqual(resolveDeleteActiveSlot(`${dueEnd - 300}`, dueEnd), dueEnd, 'newer slot raises sentinel');
 
     assert(shouldSkipTelegramDelete(nowSec - 48 * 3600, nowSec), '48h skip');
     assert(!shouldSkipTelegramDelete(nowSec - 46 * 3600, nowSec), '46h keep');
@@ -142,6 +149,20 @@ export async function testAutoDelete(): Promise<void> {
         deleteMessages: async () => 'retry',
     });
     assertEqual(retryDrain.incompleteSlot, dueEnd, '429 keeps slot');
+
+    let idleListCalls = 0;
+    const idleDrain = await drainDueSlots([], {
+        nowSec,
+        listSlot: async () => {
+            idleListCalls += 1;
+            return { tasks: [], complete: true };
+        },
+        deleteKeys: async () => {},
+        deleteMessages: async () => 'ok',
+    });
+    assertEqual(idleDrain.incompleteSlot, null, 'idle drain complete');
+    assertEqual(idleDrain.lastCompletedSlot, null, 'idle drain no slots');
+    assertEqual(idleListCalls, 0, 'idle drain skips kv list');
 
     const ttl = 3600;
     const sent10 = 1_700_000_000;

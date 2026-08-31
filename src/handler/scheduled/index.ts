@@ -57,12 +57,18 @@ export async function scheduledHandler(controller: ScheduledController, env: Env
     const nowSec = Math.floor(controller.scheduledTime / 1000);
     const dueEnd = previousSlot(controller.scheduledTime);
     const storedCursor = await dao.loadDeleteCursor();
-    const slots = selectSlotsToDrain(controller.scheduledTime, storedCursor);
+    const activeSlot = await dao.loadDeleteActive();
+    // Idle short-circuit: without a sentinel or cursor there is nothing to
+    // purge, so skip KV list() calls entirely (list quota is 1k/day).
+    const slots = activeSlot === null && storedCursor === null
+        ? []
+        : selectSlotsToDrain(controller.scheduledTime, storedCursor);
 
     logScheduled('drain.start', {
         cron: controller.cron,
         scheduledTime: controller.scheduledTime,
         storedCursor,
+        activeSlot,
         dueEnd,
         slots,
     });
@@ -85,6 +91,16 @@ export async function scheduledHandler(controller: ScheduledController, env: Env
         await dao.saveDeleteCursor(persist.cursor);
     } else if (persist.persist === 'delete') {
         await dao.clearDeleteCursor();
+    }
+
+    // Once drained past the sentinel's max slot, every enqueued purge task has
+    // been handled and later enqueues refresh the sentinel, so it is safe to
+    // clear it and return to idle short-circuit ticks.
+    if (result.incompleteSlot === null && result.lastCompletedSlot !== null) {
+        const currentActive = await dao.loadDeleteActive();
+        if (currentActive !== null && result.lastCompletedSlot >= currentActive) {
+            await dao.clearDeleteActive();
+        }
     }
 
     logScheduled('drain.done', {

@@ -9,6 +9,7 @@ export const MAX_TELEGRAM_FETCHES_PER_TICK = 40;
 export const DELETE_CURSOR_KEY = 'del:cursor';
 export const DELETE_KEY_PREFIX = 'del:';
 export const DELETE_NEXT_KEY_PREFIX = 'del:next:';
+export const DELETE_ACTIVE_KEY = 'del:active';
 
 export function nextPurgeKey(chatId: number): string {
     return `${DELETE_NEXT_KEY_PREFIX}${chatId}`;
@@ -20,6 +21,19 @@ export function resolvePurgeSlot(sentAtSec: number, ttlSeconds: number, existing
         return existingNextSlot;
     }
     return fresh;
+}
+
+/**
+ * Sentinel slot marker (`del:active`) so idle cron ticks can skip KV list() calls.
+ * Returns the slot to persist, or null when the existing marker already covers it.
+ */
+export function resolveDeleteActiveSlot(existingRaw: string | null, slot: number): number | null {
+    const existing = existingRaw === null ? Number.NaN : Number.parseInt(existingRaw, 10);
+    const current = Number.isFinite(existing) ? existing : 0;
+    if (slot > current) {
+        return slot;
+    }
+    return null;
 }
 
 export interface DeleteTask {

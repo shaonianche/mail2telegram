@@ -2767,6 +2767,7 @@ var MAX_TELEGRAM_FETCHES_PER_TICK = 40;
 var DELETE_CURSOR_KEY = "del:cursor";
 var DELETE_KEY_PREFIX = "del:";
 var DELETE_NEXT_KEY_PREFIX = "del:next:";
+var DELETE_ACTIVE_KEY = "del:active";
 function nextPurgeKey(chatId) {
   return `${DELETE_NEXT_KEY_PREFIX}${chatId}`;
 }
@@ -2776,6 +2777,14 @@ function resolvePurgeSlot(sentAtSec, ttlSeconds, existingNextSlot) {
     return existingNextSlot;
   }
   return fresh;
+}
+function resolveDeleteActiveSlot(existingRaw, slot) {
+  const existing = existingRaw === null ? Number.NaN : Number.parseInt(existingRaw, 10);
+  const current = Number.isFinite(existing) ? existing : 0;
+  if (slot > current) {
+    return slot;
+  }
+  return null;
 }
 function parseGroupMessageTtl(raw) {
   if (raw === void 0 || raw === "") {
@@ -3026,6 +3035,11 @@ var Dao = class {
       ttlSeconds,
       Number.isFinite(existingNext) ? existingNext : null
     );
+    const activeSlot = resolveDeleteActiveSlot(await this.db.get(DELETE_ACTIVE_KEY), slot);
+    if (activeSlot !== null) {
+      const activeTtl = Math.max(60, activeSlot - sentAtSec + DELETE_KEY_TTL_BUFFER);
+      await this.db.put(DELETE_ACTIVE_KEY, `${activeSlot}`, { expirationTtl: activeTtl });
+    }
     if (`${slot}` !== existingRaw) {
       const nextTtl = Math.max(60, slot - sentAtSec + DELETE_KEY_TTL_BUFFER);
       await this.db.put(nextKey, `${slot}`, { expirationTtl: nextTtl });
@@ -3082,6 +3096,27 @@ var Dao = class {
   }
   async clearDeleteCursor() {
     await this.db.delete(DELETE_CURSOR_KEY);
+  }
+  /**
+   * Returns the max enqueued purge slot, or null when no active sentinel
+   * exists (fully idle). Returns 0 on read errors to stay on the safe side.
+   */
+  async loadDeleteActive() {
+    let raw = null;
+    try {
+      raw = await this.db.get(DELETE_ACTIVE_KEY);
+    } catch (e) {
+      console.error(e);
+      return 0;
+    }
+    if (raw === null) {
+      return null;
+    }
+    const value = Number.parseInt(raw, 10);
+    return Number.isFinite(value) ? value : 0;
+  }
+  async clearDeleteActive() {
+    await this.db.delete(DELETE_ACTIVE_KEY);
   }
 };
 function loadArrayFromRaw(raw) {
@@ -14147,11 +14182,13 @@ async function scheduledHandler(controller, env) {
   const nowSec = Math.floor(controller.scheduledTime / 1e3);
   const dueEnd = previousSlot(controller.scheduledTime);
   const storedCursor = await dao.loadDeleteCursor();
-  const slots = selectSlotsToDrain(controller.scheduledTime, storedCursor);
+  const activeSlot = await dao.loadDeleteActive();
+  const slots = activeSlot === null && storedCursor === null ? [] : selectSlotsToDrain(controller.scheduledTime, storedCursor);
   logScheduled("drain.start", {
     cron: controller.cron,
     scheduledTime: controller.scheduledTime,
     storedCursor,
+    activeSlot,
     dueEnd,
     slots
   });
@@ -14171,6 +14208,12 @@ async function scheduledHandler(controller, env) {
     await dao.saveDeleteCursor(persist.cursor);
   } else if (persist.persist === "delete") {
     await dao.clearDeleteCursor();
+  }
+  if (result.incompleteSlot === null && result.lastCompletedSlot !== null) {
+    const currentActive = await dao.loadDeleteActive();
+    if (currentActive !== null && result.lastCompletedSlot >= currentActive) {
+      await dao.clearDeleteActive();
+    }
   }
   logScheduled("drain.done", {
     fetches: result.fetches,

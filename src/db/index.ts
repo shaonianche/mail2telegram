@@ -2,12 +2,14 @@ import type { KVNamespace } from '@cloudflare/workers-types';
 import type { DeleteTask } from '../telegram/auto-delete';
 import type { EmailCache, EmailHandleStatus } from '../types';
 import {
+    DELETE_ACTIVE_KEY,
     DELETE_CURSOR_KEY,
     DELETE_KEY_PREFIX,
     DELETE_KEY_TTL_BUFFER,
     deleteKey,
     nextPurgeKey,
     parseDeleteKey,
+    resolveDeleteActiveSlot,
     resolvePurgeSlot,
 } from '../telegram/auto-delete';
 
@@ -105,6 +107,13 @@ export class Dao {
             ttlSeconds,
             Number.isFinite(existingNext) ? existingNext : null,
         );
+        // Keep the active sentinel alive while any purge task exists, so idle
+        // cron ticks can skip KV list() calls (list is capped at 1k/day).
+        const activeSlot = resolveDeleteActiveSlot(await this.db.get(DELETE_ACTIVE_KEY), slot);
+        if (activeSlot !== null) {
+            const activeTtl = Math.max(60, activeSlot - sentAtSec + DELETE_KEY_TTL_BUFFER);
+            await this.db.put(DELETE_ACTIVE_KEY, `${activeSlot}`, { expirationTtl: activeTtl });
+        }
         if (`${slot}` !== existingRaw) {
             const nextTtl = Math.max(60, slot - sentAtSec + DELETE_KEY_TTL_BUFFER);
             await this.db.put(nextKey, `${slot}`, { expirationTtl: nextTtl });
@@ -166,6 +175,29 @@ export class Dao {
 
     async clearDeleteCursor(): Promise<void> {
         await this.db.delete(DELETE_CURSOR_KEY);
+    }
+
+    /**
+     * Returns the max enqueued purge slot, or null when no active sentinel
+     * exists (fully idle). Returns 0 on read errors to stay on the safe side.
+     */
+    async loadDeleteActive(): Promise<number | null> {
+        let raw: string | null = null;
+        try {
+            raw = await this.db.get(DELETE_ACTIVE_KEY);
+        } catch (e) {
+            console.error(e);
+            return 0;
+        }
+        if (raw === null) {
+            return null;
+        }
+        const value = Number.parseInt(raw, 10);
+        return Number.isFinite(value) ? value : 0;
+    }
+
+    async clearDeleteActive(): Promise<void> {
+        await this.db.delete(DELETE_ACTIVE_KEY);
     }
 }
 
